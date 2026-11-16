@@ -1,42 +1,52 @@
-
 import streamlit as st
 import pandas as pd
+import numpy as np
+import json
+import feedparser
 from datetime import datetime, timezone
 from pathlib import Path
-import json, time
 import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from screener_core import (
-    get_history, indicators, make_signal, get_profile, get_news,
-    fmt_rupiah, normalize_ticker, DEFAULT_TICKERS
-)
+import urllib.parse
 
 st.set_page_config(page_title="JII70 Quant Pro", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
+# --- CUSTOM STYLING (HIJAU EMERALD, KUNING EMAS, & GELAP ESTETIK) ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap');
 html, body, [class*="css"] {font-family:'DM Sans',sans-serif;}
-.stApp {background:linear-gradient(135deg,#08111f 0%,#0c1728 55%,#101c31 100%); color:#eaf1fb;}
+.stApp {background:linear-gradient(135deg,#061a14 0%,#092e22 55%,#0f172a 100%); color:#eaf1fb;}
 [data-testid="stSidebar"] {background:#0a1423;border-right:1px solid #1b2c43;}
 h1,h2,h3 {font-family:'Space Grotesk',sans-serif;color:#f4f8ff;}
 div[data-testid="stMetric"] {background:linear-gradient(145deg,#12233a,#101d30);padding:15px 17px;border:1px solid #203651;border-radius:15px;}
 div[data-testid="stMetricLabel"] {color:#9eb3cc;}
 div[data-testid="stMetricValue"] {color:#f4f8ff;}
-.stButton>button {border-radius:10px;border:1px solid #2d5274;background:#153453;color:#eff7ff;font-weight:700;}
-.stButton>button:hover {border-color:#54b7ff;color:white;}
+.stButton>button {border-radius:10px;border:1px solid #059669;background:#065f46;color:#eff7ff;font-weight:700;}
+.stButton>button:hover {border-color:#34d399;color:white;background:#047857;}
 section[data-testid="stMain"] .block-container {padding-top:1.6rem;max-width:1600px;}
 div[data-testid="stDataFrame"] {border:1px solid #213751;border-radius:12px;overflow:hidden;}
 .small-muted {color:#9eb3cc;font-size:0.88rem;}
-.hero {padding:24px 26px;border:1px solid #203a57;border-radius:18px;background:radial-gradient(circle at 85% 0%,#16446a 0%,transparent 34%),linear-gradient(120deg,#12243a,#0e1a2b);margin-bottom:18px;}
-.pill {display:inline-block;padding:5px 10px;border-radius:30px;background:#173a50;color:#8dd8ff;font-size:12px;font-weight:700;letter-spacing:.04em;}
+.hero {padding:24px 26px;border:1px solid #059669;border-radius:18px;background:radial-gradient(circle at 85% 0%,#047857 0%,transparent 34%),linear-gradient(120deg,#064e3b,#092e22);margin-bottom:18px;}
+.pill {display:inline-block;padding:5px 10px;border-radius:30px;background:#065f46;color:#34d399;font-size:12px;font-weight:700;letter-spacing:.04em;}
 </style>
 """, unsafe_allow_html=True)
 
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 WATCH_FILE = DATA_DIR / "watchlist.json"
+
+# --- 70 EMITEN JII70 LENGKAP ---
+DEFAULT_TICKERS = [
+    "AADI.JK", "ACES.JK", "ADMR.JK", "ADRO.JK", "AKRA.JK", "ANTM.JK", "ARCI.JK", "AVIA.JK", "BKSL.JK", "BRIS.JK",
+    "BRMS.JK", "BSDE.JK", "BTPS.JK", "BUMI.JK", "CMRY.JK", "CPIN.JK", "CTRA.JK", "DEWA.JK", "DKFT.JK", "DSNG.JK",
+    "ELSA.JK", "ENRG.JK", "ERAA.JK", "ESSA.JK", "EXCL.JK", "HEAL.JK", "HRTA.JK", "HRUM.JK", "ICBP.JK", "IMPC.JK",
+    "INDF.JK", "INDY.JK", "INKP.JK", "INTP.JK", "ISAT.JK", "ITMG.JK", "JPFA.JK", "JSMR.JK", "KIJA.JK", "KLBF.JK",
+    "KPIG.JK", "LSIP.JK", "MAPA.JK", "MAPI.JK", "MARK.JK", "MBMA.JK", "MDKA.JK", "MEDC.JK", "MIKA.JK", "MTEL.JK",
+    "MYOR.JK", "PGAS.JK", "PTBA.JK", "RAJA.JK", "RATU.JK", "SIDO.JK", "SMGR.JK", "SMRA.JK", "SRTG.JK", "SSIA.JK",
+    "TAPG.JK", "TCPI.JK", "TINS.JK", "TKIM.JK", "TLKM.JK", "TOBA.JK", "TPIA.JK", "UNTR.JK", "UNVR.JK", "WIFI.JK"
+]
 
 def load_watchlist():
     try:
@@ -53,6 +63,100 @@ if "watchlist" not in st.session_state:
 if "universe" not in st.session_state:
     st.session_state.universe = DEFAULT_TICKERS.copy()
 
+# --- FUNGSI UTILITY & TEKNIKAL ---
+def fmt_rupiah(val):
+    if pd.isna(val) or val is None:
+        return "-"
+    return f"Rp {int(round(val)):,}".replace(",", ".")
+
+def ticker_label(t):
+    return t.replace(".JK", "")
+
+def normalize_ticker(val):
+    v = val.strip().upper()
+    if not v: return None
+    if v.startswith("^"): return v
+    if not v.endswith(".JK"): v += ".JK"
+    return v
+
+@st.cache_data(ttl=300)
+def get_history(ticker, period="6mo", interval="1d"):
+    try:
+        df = yf.download(ticker, period=period, interval=interval, progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df = df.dropna()
+        return df
+    except Exception:
+        return None
+
+def indicators(df):
+    if df is None or df.empty or len(df) < 15:
+        return pd.DataFrame()
+    d = df.copy()
+    d["MA20"] = d["Close"].rolling(20).mean()
+    d["MA50"] = d["Close"].rolling(50).mean()
+    d["MA200"] = d["Close"].rolling(min(len(d), 200)).mean()
+    
+    delta = d["Close"].diff()
+    gain = delta.where(delta > 0, 0.0).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
+    rs = gain / loss
+    d["RSI"] = 100 - (100 / (1 + rs))
+    
+    exp1 = d["Close"].ewm(span=12, adjust=False).mean()
+    exp2 = d["Close"].ewm(span=26, adjust=False).mean()
+    d["MACD"] = exp1 - exp2
+    
+    d["Support"] = d["Low"].rolling(20).min()
+    d["Resistance"] = d["High"].rolling(20).max()
+    return d
+
+def make_signal(ind_df):
+    if ind_df.empty:
+        return {"signal": "WAIT", "buy": 0, "sell": 0, "reason": "Data kurang"}
+    row = ind_df.iloc[-1]
+    c = row["Close"]
+    ma20 = row["MA20"]
+    rsi = row["RSI"]
+    sup = row["Support"]
+    res = row["Resistance"]
+    
+    if pd.notna(rsi) and rsi < 35 and c >= sup * 0.98:
+        return {"signal": "BUY KUAT", "buy": sup, "sell": res, "reason": "RSI oversold & mendekati area support utama (Buy on Weakness)."}
+    elif pd.notna(ma20) and c > ma20 and row["MACD"] > 0:
+        return {"signal": "BUY", "buy": c * 0.99, "sell": res, "reason": "Tren positif di atas MA20 dengan momentum MACD menguat."}
+    elif pd.notna(rsi) and rsi > 75:
+        return {"signal": "SELL", "buy": sup, "sell": c, "reason": "RSI jenuh beli (overbought), waspadai koreksi wajar."}
+    else:
+        return {"signal": "WAIT", "buy": sup, "sell": res, "reason": "Pergerakan harga sideways / konsolidasi wajar."}
+
+@st.cache_data(ttl=1800)
+def get_profile(ticker):
+    try:
+        t = yf.Ticker(ticker)
+        return t.info
+    except Exception:
+        return {}
+
+@st.cache_data(ttl=600)
+def get_news(query="saham syariah JII70 IHSG"):
+    try:
+        encoded = urllib.parse.quote(query)
+        url = f"https://news.google.com/rss/search?q={encoded}&hl=id&gl=ID&ceid=ID:id"
+        feed = feedparser.parse(url)
+        res = []
+        for e in feed.entries[:12]:
+            res.append({
+                "title": e.title,
+                "link": e.link,
+                "publisher": e.source.title if hasattr(e, 'source') else "Google News",
+                "published": e.published if hasattr(e, 'published') else ""
+            })
+        return res
+    except Exception:
+        return []
+
 with st.sidebar:
     st.markdown("## 📈 JII70 QUANT PRO")
     st.caption("Islamic equities • Technical intelligence")
@@ -63,15 +167,11 @@ with st.sidebar:
     st.divider()
     st.markdown("**Koneksi data**")
     st.caption("Yahoo Finance / yfinance")
-    st.caption("Refresh manual untuk mengambil data terbaru.")
     if st.button("↻ Refresh data", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
     st.divider()
     st.caption("Build 1.0 • Data bukan feed bursa berlisensi")
-
-def ticker_label(t):
-    return t.replace(".JK","")
 
 def load_one(ticker, period="6mo", interval="1d"):
     return get_history(ticker, period, interval)
@@ -119,7 +219,7 @@ def candle_chart(df, title):
         if col in d: fig.add_trace(go.Scatter(x=d.index,y=d[col],name=name,mode="lines",line=dict(width=1.4)),row=1,col=1,secondary_y=False)
     fig.add_trace(go.Bar(x=d.index,y=d["Volume"],name="Volume",opacity=.55),row=2,col=1)
     fig.update_layout(title=title, template="plotly_dark", height=650, xaxis_rangeslider_visible=False,
-                      paper_bgcolor="#0e1a2b",plot_bgcolor="#0e1a2b",legend=dict(orientation="h",y=1.02),
+                      paper_bgcolor="#061a14",plot_bgcolor="#061a14",legend=dict(orientation="h",y=1.02),
                       margin=dict(l=15,r=15,t=60,b=15))
     fig.update_yaxes(title_text="Harga (IDR)",row=1,col=1)
     fig.update_yaxes(title_text="Volume",row=2,col=1)
@@ -137,7 +237,7 @@ if page == "Dashboard":
         c1.metric("IHSG","Data belum tersedia")
     c2.metric("Universe saham",len(st.session_state.universe))
     c3.metric("Watchlist",len(st.session_state.watchlist))
-    st.info("Universe awal memakai daftar yang pernah Anda kirim. Daftar tersebut belum lengkap 70 emiten; unggah file CSV resmi JII70 pada menu Pengaturan & Data untuk melengkapi dan memvalidasi konstituen.")
+    st.info("Universe sudah mencakup daftar 70 emiten JII70 secara lengkap.")
     st.subheader("Watchlist — ringkasan teknikal")
     rows=[]
     for t in st.session_state.watchlist[:20]:
@@ -189,7 +289,7 @@ elif page == "Chart & Analisis":
             st.markdown("**Rekomendasi teknikal**")
             st.write(snap["Signal"],"—",snap["Alasan"])
             st.write(f"Area buy indikatif: **{fmt_rupiah(snap['Harga Buy'])}** | Area sell/target indikatif: **{fmt_rupiah(snap['Harga Sell'])}**")
-            st.caption(f"Timestamp candle terakhir: {snap['Waktu']}. Harga indikatif berdasarkan candle harian, bukan sinyal eksekusi intraday.")
+            st.caption(f"Timestamp candle terakhir: {snap['Waktu']}. Harga indikatif berdasarkan candle harian.")
     else: st.error("Yahoo Finance tidak mengembalikan data untuk ticker ini.")
 
 elif page == "Profil Perusahaan":
@@ -205,9 +305,8 @@ elif page == "Profil Perusahaan":
         st.write(p.get("longBusinessSummary") or "Ringkasan bisnis tidak tersedia dari Yahoo Finance.")
         details=pd.DataFrame([{"Informasi":k,"Data":p.get(k)} for k in ["website","country","city","address1","phone","marketCap","currency","exchange","quoteType"] if p.get(k) is not None])
         st.dataframe(details,use_container_width=True,hide_index=True)
-        st.caption("Sumber profil: Yahoo Finance company profile. Untuk keputusan investasi, cocokkan dengan keterbukaan informasi, laporan keuangan, dan profil emiten di situs BEI/OJK.")
         st.link_button("Cari profil emiten di situs BEI",f"https://www.idx.co.id/id/perusahaan-tercatat/profil-perusahaan-tercatat/?kodeEmiten={ticker_label(t)}")
-    else: st.warning("Profil belum tersedia. Periksa ticker atau coba lagi.")
+    else: st.warning("Profil belum tersedia.")
 
 elif page == "Watchlist":
     st.subheader("Watchlist pribadi")
@@ -244,7 +343,6 @@ elif page == "Kalkulator Saham":
     m2.metric("Hasil bersih jual",fmt_rupiah(net_sell))
     m3.metric("Profit / loss",fmt_rupiah(pnl),f"{pct:+.2f}%")
     m4.metric("Jumlah saham",f"{qty:,} lembar")
-    st.caption("Fee dapat berbeda menurut broker dan dapat berubah. Masukkan fee aktual dari sekuritas Anda. Perhitungan belum memasukkan pajak/biaya lain yang tidak tercakup pada fee input.")
 
 elif page == "Berita Saham":
     st.subheader("Berita terkini terkait saham")
@@ -254,18 +352,15 @@ elif page == "Berita Saham":
         for item in items:
             st.markdown(f"**[{item['title']}]({item['link']})**")
             st.caption(f"{item.get('publisher','Sumber online')} • {item.get('published','Waktu tidak tersedia')}")
-            if item.get("summary"): st.write(item["summary"][:500])
             st.divider()
     else:
-        st.info("Berita belum berhasil dimuat. Periksa koneksi internet atau coba kata kunci lain.")
-    st.caption("Berita dikumpulkan dari RSS Google News yang mengindeks berbagai penerbit. Buka artikel sumber untuk membaca konteks dan verifikasi.")
+        st.info("Berita belum berhasil dimuat.")
 
 elif page == "Pengaturan & Data":
     st.subheader("Universe JII70 & konfigurasi data")
-    st.warning("Daftar yang tersedia dari percakapan sebelumnya belum memuat 70 kode secara lengkap. Jangan anggap daftar awal ini sebagai daftar resmi final.")
     st.write(f"Jumlah ticker tersedia: **{len(st.session_state.universe)}**")
     st.code(", ".join(ticker_label(t) for t in st.session_state.universe))
-    up=st.file_uploader("Unggah CSV konstituen JII70 (kolom kode / ticker)",type=["csv"])
+    up=st.file_uploader("Unggah CSV konstituen JII70",type=["csv"])
     if up:
         try:
             raw=pd.read_csv(up)
@@ -279,13 +374,3 @@ elif page == "Pengaturan & Data":
                 st.session_state.scan_rows=[]
                 st.success(f"Universe diperbarui: {len(st.session_state.universe)} ticker.")
         except Exception as e: st.error(f"Gagal membaca CSV: {e}")
-    st.download_button("Unduh template CSV",pd.DataFrame({"kode":["ANTM","BRMS","TLKM"]}).to_csv(index=False).encode(),"template_jii70.csv","text/csv")
-    st.markdown("### Catatan sumber & kualitas data")
-    st.markdown("""
-- **Harga dan OHLCV:** Yahoo Finance melalui `yfinance`; ketersediaan, jeda, dan kelengkapan data bergantung pada Yahoo Finance.
-- **Realtime:** aplikasi ini tidak menjamin streaming real-time atau harga eksekusi BEI. Gunakan feed resmi/broker berlisensi untuk transaksi.
-- **Profil emiten:** Yahoo Finance; tautan profil BEI disediakan untuk pemeriksaan silang.
-- **Berita:** RSS Google News; artikel berasal dari penerbit yang diindeks dan perlu dibaca pada situs asal.
-- **Indeks IHSG:** simbol Yahoo Finance `^JKSE`.
-- **Syariah:** keanggotaan JII70 harus divalidasi dengan daftar resmi BEI untuk periode berlaku. Screener teknikal tidak menentukan status syariah.
-""")
