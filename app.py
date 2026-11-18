@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import numpy as np
 import json
@@ -6,8 +7,6 @@ import feedparser
 from datetime import datetime, timezone
 from pathlib import Path
 import yfinance as yf
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import urllib.parse
 
 st.set_page_config(page_title="JII70 Quant Pro", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
@@ -84,9 +83,12 @@ DEFAULT_TICKERS = [
 
 def load_watchlist():
     try:
-        return json.loads(WATCH_FILE.read_text())
+        if WATCH_FILE.exists():
+            data = json.loads(WATCH_FILE.read_text())
+            return data if isinstance(data, list) else []
+        return []
     except Exception:
-        return ["BRMS.JK", "ANTM.JK", "ADRO.JK", "^JKSE"]
+        return []
 
 def save_watchlist(items):
     WATCH_FILE.write_text(json.dumps(sorted(set(items)), indent=2))
@@ -112,6 +114,11 @@ def normalize_ticker(val):
     if v.startswith("^"): return v
     if not v.endswith(".JK"): v += ".JK"
     return v
+
+def to_tv_symbol(ticker):
+    if ticker == "^JKSE":
+        return "IDX:COMPOSITE"
+    return f"IDX:{ticker_label(ticker)}"
 
 @st.cache_data(ttl=300)
 def get_history(ticker, period="6mo", interval="1d"):
@@ -200,7 +207,7 @@ with st.sidebar:
     ])
     st.divider()
     st.markdown("**Koneksi data**")
-    st.caption("Yahoo Finance / yfinance")
+    st.caption("Yahoo Finance & TradingView")
     if st.button("↻ Refresh data", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
@@ -241,23 +248,39 @@ def metric_cards(snap):
     for c,(lab,val) in zip(cols,vals):
         c.metric(lab,val)
 
-def candle_chart(df, title):
-    d = indicators(df)
-    if d.empty: 
-        st.warning("Data chart tidak tersedia.")
-        return
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=.04,
-                        row_heights=[.72,.28], specs=[[{"secondary_y":True}],[{"secondary_y":False}]])
-    fig.add_trace(go.Candlestick(x=d.index, open=d["Open"], high=d["High"], low=d["Low"], close=d["Close"], name="Candlestick"), row=1,col=1, secondary_y=False)
-    for col, name in [("MA20","MA20"),("MA50","MA50"),("MA200","MA200")]:
-        if col in d: fig.add_trace(go.Scatter(x=d.index,y=d[col],name=name,mode="lines",line=dict(width=1.4)),row=1,col=1,secondary_y=False)
-    fig.add_trace(go.Bar(x=d.index,y=d["Volume"],name="Volume",opacity=.55),row=2,col=1)
-    fig.update_layout(title=title, template="plotly_dark", height=650, xaxis_rangeslider_visible=False,
-                      paper_bgcolor="#061a14",plot_bgcolor="#061a14",legend=dict(orientation="h",y=1.02),
-                      margin=dict(l=15,r=15,t=60,b=15))
-    fig.update_yaxes(title_text="Harga (IDR)",row=1,col=1)
-    fig.update_yaxes(title_text="Volume",row=2,col=1)
-    st.plotly_chart(fig,use_container_width=True)
+def tradingview_chart(ticker, height=620):
+    tv_symbol = to_tv_symbol(ticker)
+    widget_html = f"""
+    <div class="tradingview-widget-container" style="height:{height}px;width:100%;border-radius:14px;overflow:hidden;border:1px solid #203651;">
+      <div id="tv_chart_container" style="height:calc(100% - 32px);width:100%;"></div>
+      <div class="tradingview-widget-copyright" style="background:#0b1622;color:#8fa3bf;font-family:sans-serif;font-size:11px;padding:6px 12px;text-align:right;">
+        Chart interaktif oleh <a href="https://id.tradingview.com/" rel="noopener nofollow" target="_blank" style="color:#34d399;text-decoration:none;">TradingView</a>
+      </div>
+      <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+      <script type="text/javascript">
+      new TradingView.widget({{
+        "autosize": true,
+        "symbol": "{tv_symbol}",
+        "interval": "D",
+        "timezone": "Asia/Jakarta",
+        "theme": "dark",
+        "style": "1",
+        "locale": "id",
+        "toolbar_bg": "#0b1622",
+        "backgroundColor": "#081713",
+        "gridColor": "rgba(32, 54, 81, 0.35)",
+        "enable_publishing": false,
+        "allow_symbol_change": true,
+        "save_image": true,
+        "studies": [
+          "MASimple@tv-basicstudies"
+        ],
+        "container_id": "tv_chart_container"
+      }});
+      </script>
+    </div>
+    """
+    components.html(widget_html, height=height + 10)
 
 st.markdown('<div class="hero"><span class="pill">JII70 • QUANTITATIVE MARKET WORKSTATION</span><h1 style="margin:12px 0 4px 0;">JII70 Screener & Trading Desk</h1><div class="small-muted">Analisis teknikal, pemantauan syariah, chart candlestick, riset emiten, watchlist dan kalkulator transaksi.</div></div>',unsafe_allow_html=True)
 
@@ -272,18 +295,19 @@ if page == "Dashboard":
     c2.metric("Universe saham",len(st.session_state.universe))
     c3.metric("Watchlist",len(st.session_state.watchlist))
     st.info("Universe sudah mencakup daftar 70 emiten JII70 secara lengkap.")
-    st.subheader("Watchlist — ringkasan teknikal")
-    rows=[]
-    for t in st.session_state.watchlist[:20]:
-        s=latest_snapshot(t)
-        if s: rows.append(s)
-    if rows:
-        df=pd.DataFrame(rows)
-        st.dataframe(df[["Kode","Harga","Chg %","RSI","Support","Resistance","Signal","Harga Buy","Harga Sell"]],use_container_width=True,hide_index=True)
-    st.subheader("IHSG — candlestick 6 bulan")
-    if idx:
-        ih=load_one("^JKSE","6mo","1d")
-        candle_chart(ih,"IHSG • 6 bulan • 1D")
+    
+    if st.session_state.watchlist:
+        st.subheader("Watchlist — ringkasan teknikal")
+        rows=[]
+        for t in st.session_state.watchlist[:20]:
+            s=latest_snapshot(t)
+            if s: rows.append(s)
+        if rows:
+            df=pd.DataFrame(rows)
+            st.dataframe(df[["Kode","Harga","Chg %","RSI","Support","Resistance","Signal","Harga Buy","Harga Sell"]],use_container_width=True,hide_index=True)
+
+    st.subheader("IHSG — Chart Candlestick TradingView")
+    tradingview_chart("^JKSE", height=580)
 
 elif page == "Screener JII70":
     st.subheader("Screener JII70")
@@ -314,17 +338,18 @@ elif page == "Chart & Analisis":
     st.subheader("Chart candlestick & analisis teknikal")
     options=st.session_state.universe+["^JKSE"]
     t=st.selectbox("Pilih saham / indeks",options,format_func=lambda x:"IHSG (^JKSE)" if x=="^JKSE" else ticker_label(x))
-    df=load_one(t,"6mo","1d")
-    if df is not None and not df.empty:
-        candle_chart(df,f"{ticker_label(t)} • Candlestick 6 bulan")
-        snap=latest_snapshot(t)
-        if snap:
-            metric_cards(snap)
-            st.markdown("**Rekomendasi teknikal**")
-            st.write(snap["Signal"],"—",snap["Alasan"])
-            st.write(f"Area buy indikatif: **{fmt_rupiah(snap['Harga Buy'])}** | Area sell/target indikatif: **{fmt_rupiah(snap['Harga Sell'])}**")
-            st.caption(f"Timestamp candle terakhir: {snap['Waktu']}. Harga indikatif berdasarkan candle harian.")
-    else: st.error("Yahoo Finance tidak mengembalikan data untuk ticker ini.")
+    
+    tradingview_chart(t, height=620)
+    
+    snap=latest_snapshot(t)
+    if snap:
+        metric_cards(snap)
+        st.markdown("**Rekomendasi teknikal**")
+        st.write(snap["Signal"],"—",snap["Alasan"])
+        st.write(f"Area buy indikatif: **{fmt_rupiah(snap['Harga Buy'])}** | Area sell/target indikatif: **{fmt_rupiah(snap['Harga Sell'])}**")
+        st.caption(f"Timestamp candle terakhir: {snap['Waktu']}. Harga indikatif berdasarkan candle harian.")
+    else:
+        st.warning("Ringkasan indikator harian belum tersedia untuk ticker ini.")
 
 elif page == "Profil Perusahaan":
     st.subheader("Profil perusahaan")
@@ -344,19 +369,33 @@ elif page == "Profil Perusahaan":
 
 elif page == "Watchlist":
     st.subheader("Watchlist pribadi")
-    add=st.selectbox("Tambah saham",st.session_state.universe,format_func=ticker_label,key="watch_add")
+    add=st.selectbox("Pilih saham untuk ditambahkan",["— Pilih Saham —"] + st.session_state.universe,format_func=lambda x: x if x=="— Pilih Saham —" else ticker_label(x),key="watch_add")
     if st.button("＋ Tambahkan ke watchlist"):
-        if add not in st.session_state.watchlist: st.session_state.watchlist.append(add); save_watchlist(st.session_state.watchlist)
-        st.success(f"{ticker_label(add)} ditambahkan.")
-    rows=[]
-    for t in st.session_state.watchlist:
-        s=latest_snapshot(t)
-        if s: rows.append(s)
-    if rows:
-        st.dataframe(pd.DataFrame(rows)[["Kode","Harga","Chg %","RSI","Support","Resistance","Signal","Alasan"]],use_container_width=True,hide_index=True)
-    rem=st.selectbox("Hapus dari watchlist",["—"]+st.session_state.watchlist,format_func=lambda x:ticker_label(x) if x!="—" else x)
-    if st.button("Hapus pilihan") and rem!="—":
-        st.session_state.watchlist=[x for x in st.session_state.watchlist if x!=rem]; save_watchlist(st.session_state.watchlist); st.rerun()
+        if add != "— Pilih Saham —":
+            if add not in st.session_state.watchlist:
+                st.session_state.watchlist.append(add)
+                save_watchlist(st.session_state.watchlist)
+                st.success(f"{ticker_label(add)} ditambahkan ke watchlist.")
+                st.rerun()
+            else:
+                st.info(f"{ticker_label(add)} sudah ada di watchlist.")
+        else:
+            st.warning("Silakan pilih saham terlebih dahulu.")
+            
+    if st.session_state.watchlist:
+        rows=[]
+        for t in st.session_state.watchlist:
+            s=latest_snapshot(t)
+            if s: rows.append(s)
+        if rows:
+            st.dataframe(pd.DataFrame(rows)[["Kode","Harga","Chg %","RSI","Support","Resistance","Signal","Alasan"]],use_container_width=True,hide_index=True)
+        rem=st.selectbox("Hapus dari watchlist",["—"]+st.session_state.watchlist,format_func=lambda x:ticker_label(x) if x!="—" else x)
+        if st.button("Hapus pilihan") and rem!="—":
+            st.session_state.watchlist=[x for x in st.session_state.watchlist if x!=rem]
+            save_watchlist(st.session_state.watchlist)
+            st.rerun()
+    else:
+        st.info("Watchlist masih kosong. Pilih saham di atas dan klik **＋ Tambahkan ke watchlist** untuk mulai memantau.")
 
 elif page == "Kalkulator Saham":
     st.subheader("Kalkulator transaksi saham")
