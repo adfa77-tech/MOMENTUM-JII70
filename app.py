@@ -30,6 +30,40 @@ div[data-testid="stDataFrame"] {border:1px solid #213751;border-radius:12px;over
 .small-muted {color:#9eb3cc;font-size:0.88rem;}
 .hero {padding:24px 26px;border:1px solid #059669;border-radius:18px;background:radial-gradient(circle at 85% 0%,#047857 0%,transparent 34%),linear-gradient(120deg,#064e3b,#092e22);margin-bottom:18px;}
 .pill {display:inline-block;padding:5px 10px;border-radius:30px;background:#065f46;color:#34d399;font-size:12px;font-weight:700;letter-spacing:.04em;}
+
+/* Custom Card untuk Hasil Kalkulator agar tulisan lebih kecil & tidak terpotong titik-titik */
+.calc-card {
+    background: linear-gradient(145deg, #12233a, #101d30);
+    padding: 14px 16px;
+    border: 1px solid #203651;
+    border-radius: 14px;
+    height: 100%;
+}
+.calc-label {
+    color: #9eb3cc;
+    font-size: 0.82rem;
+    font-weight: 500;
+    margin-bottom: 6px;
+}
+.calc-value {
+    color: #f4f8ff;
+    font-size: 1.12rem;
+    font-weight: 700;
+    line-height: 1.3;
+    word-break: break-word;
+}
+.calc-delta-pos {
+    color: #34d399;
+    font-size: 0.82rem;
+    font-weight: 700;
+    margin-top: 4px;
+}
+.calc-delta-neg {
+    color: #f87171;
+    font-size: 0.82rem;
+    font-weight: 700;
+    margin-top: 4px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -326,23 +360,72 @@ elif page == "Watchlist":
 
 elif page == "Kalkulator Saham":
     st.subheader("Kalkulator transaksi saham")
-    x1,x2,x3=st.columns(3)
-    lot=x1.number_input("Jumlah lot",min_value=1,value=10,step=1)
-    buy=x2.number_input("Harga beli / lembar (Rp)",min_value=1,value=1000,step=1)
-    sell=x3.number_input("Harga jual / lembar (Rp)",min_value=1,value=1100,step=1)
-    y1,y2=st.columns(2)
-    buy_fee=y1.number_input("Fee beli (%)",min_value=0.0,value=0.15,step=0.01,format="%.2f")
-    sell_fee=y2.number_input("Fee jual (%)",min_value=0.0,value=0.25,step=0.01,format="%.2f")
-    qty=lot*100
-    gross_buy=qty*buy; gross_sell=qty*sell
-    fee_b=gross_buy*buy_fee/100; fee_s=gross_sell*sell_fee/100
-    total_buy=gross_buy+fee_b; net_sell=gross_sell-fee_s
-    pnl=net_sell-total_buy; pct=pnl/total_buy*100 if total_buy else 0
-    m1,m2,m3,m4=st.columns(4)
-    m1.metric("Modal + fee beli",fmt_rupiah(total_buy))
-    m2.metric("Hasil bersih jual",fmt_rupiah(net_sell))
-    m3.metric("Profit / loss",fmt_rupiah(pnl),f"{pct:+.2f}%")
-    m4.metric("Jumlah saham",f"{qty:,} lembar")
+    
+    # --- KOLOM NAMA / KODE SAHAM ---
+    s1, s2 = st.columns([2, 1])
+    pilih_saham = s1.selectbox(
+        "Pilih kode saham (JII70)",
+        ["Input Manual"] + [ticker_label(t) for t in st.session_state.universe],
+        index=1
+    )
+    if pilih_saham == "Input Manual":
+        nama_saham = s2.text_input("Ketik kode / nama saham", value="BBCA").strip().upper() or "-"
+    else:
+        nama_saham = s2.text_input("Kode / nama saham terpilih", value=pilih_saham).strip().upper() or pilih_saham
+
+    x1, x2, x3 = st.columns(3)
+    lot = x1.number_input("Jumlah lot", min_value=1, value=10, step=1)
+    buy = x2.number_input("Harga beli / lembar (Rp)", min_value=1, value=1000, step=1)
+    sell = x3.number_input("Harga jual / lembar (Rp)", min_value=1, value=1100, step=1)
+    
+    y1, y2 = st.columns(2)
+    buy_fee = y1.number_input("Fee beli (%)", min_value=0.0, value=0.15, step=0.01, format="%.2f")
+    sell_fee = y2.number_input("Fee jual (%)", min_value=0.0, value=0.25, step=0.01, format="%.2f")
+    
+    # --- RUMUS TETAP SAMA ---
+    qty = lot * 100
+    gross_buy = qty * buy
+    gross_sell = qty * sell
+    fee_b = gross_buy * buy_fee / 100
+    fee_s = gross_sell * sell_fee / 100
+    total_buy = gross_buy + fee_b
+    net_sell = gross_sell - fee_s
+    pnl = net_sell - total_buy
+    pct = pnl / total_buy * 100 if total_buy else 0
+
+    st.markdown(f"**Ringkasan Simulasi: {nama_saham}**")
+    delta_class = "calc-delta-pos" if pnl >= 0 else "calc-delta-neg"
+    
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.markdown(f"""
+        <div class="calc-card">
+            <div class="calc-label">Modal + fee beli ({nama_saham})</div>
+            <div class="calc-value">{fmt_rupiah(total_buy)}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with m2:
+        st.markdown(f"""
+        <div class="calc-card">
+            <div class="calc-label">Hasil bersih jual</div>
+            <div class="calc-value">{fmt_rupiah(net_sell)}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with m3:
+        st.markdown(f"""
+        <div class="calc-card">
+            <div class="calc-label">Profit / loss</div>
+            <div class="calc-value">{fmt_rupiah(pnl)}</div>
+            <div class="{delta_class}">{pct:+.2f}%</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with m4:
+        st.markdown(f"""
+        <div class="calc-card">
+            <div class="calc-label">Jumlah saham</div>
+            <div class="calc-value">{f"{qty:,}".replace(",", ".")} lembar</div>
+        </div>
+        """, unsafe_allow_html=True)
 
 elif page == "Berita Saham":
     st.subheader("Berita terkini terkait saham")
